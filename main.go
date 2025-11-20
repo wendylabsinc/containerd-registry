@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -56,77 +57,8 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// logRequest logs an HTTP request in the specified format
-func logRequest(format string, method, path, remoteAddr string, status int, duration time.Duration, bytesWritten int64) {
-	if format == "json" {
-		entry := map[string]interface{}{
-			"time":        time.Now().UTC().Format(time.RFC3339),
-			"method":      method,
-			"path":        path,
-			"remote":      remoteAddr,
-			"status":      status,
-			"duration_ms": duration.Milliseconds(),
-			"bytes":       bytesWritten,
-		}
-
-		if status >= 500 {
-			entry["level"] = "error"
-		} else if status >= 400 {
-			entry["level"] = "warn"
-		} else {
-			entry["level"] = "info"
-		}
-
-		jsonBytes, _ := json.Marshal(entry)
-		fmt.Println(string(jsonBytes))
-	} else {
-		// Text format (default)
-		levelStr := "INFO "
-		if status >= 500 {
-			levelStr = "ERROR"
-		} else if status >= 400 {
-			levelStr = "WARN "
-		}
-
-		durationStr := formatDuration(duration)
-		bytesStr := formatBytes(bytesWritten)
-
-		fmt.Printf("%s %s %s %s %d %s %s\n",
-			time.Now().Format("2006-01-02 15:04:05"),
-			levelStr,
-			method,
-			path,
-			status,
-			durationStr,
-			bytesStr,
-		)
-	}
-}
-
-func formatDuration(d time.Duration) string {
-	if d < time.Millisecond {
-		return fmt.Sprintf("%.2fms", float64(d.Microseconds())/1000.0)
-	} else if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
-	}
-	return fmt.Sprintf("%.1fs", d.Seconds())
-}
-
-func formatBytes(bytes int64) string {
-	if bytes == 0 {
-		return "-"
-	} else if bytes < 1024 {
-		return fmt.Sprintf("%dB", bytes)
-	} else if bytes < 1024*1024 {
-		return fmt.Sprintf("%.1fKB", float64(bytes)/1024.0)
-	} else if bytes < 1024*1024*1024 {
-		return fmt.Sprintf("%.1fMB", float64(bytes)/(1024.0*1024.0))
-	}
-	return fmt.Sprintf("%.2fGB", float64(bytes)/(1024.0*1024.0*1024.0))
-}
-
-// loggingMiddleware logs all HTTP requests
-func loggingMiddleware(format string) func(http.Handler) http.Handler {
+// loggingMiddleware logs all HTTP requests using slog
+func loggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -140,9 +72,28 @@ func loggingMiddleware(format string) func(http.Handler) http.Handler {
 			// Call next handler
 			next.ServeHTTP(wrapped, r)
 
-			// Log the request
+			// Calculate duration
 			duration := time.Since(start)
-			logRequest(format, r.Method, r.URL.Path, r.RemoteAddr, wrapped.status, duration, wrapped.bytes)
+
+			// Determine log level based on status code
+			var logFunc func(string, ...any)
+			if wrapped.status >= 500 {
+				logFunc = logger.Error
+			} else if wrapped.status >= 400 {
+				logFunc = logger.Warn
+			} else {
+				logFunc = logger.Info
+			}
+
+			// Log the request with structured fields
+			logFunc("HTTP request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"remote", r.RemoteAddr,
+				"status", wrapped.status,
+				"duration_ms", duration.Milliseconds(),
+				"bytes", wrapped.bytes,
+			)
 		})
 	}
 }
@@ -789,6 +740,17 @@ func main() {
 		logFormat = strings.ToLower(val)
 	}
 
+	// Create slog logger based on format
+	var logger *slog.Logger
+	if logFormat == "json" {
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	} else {
+		logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
+	}
+
+	// Set as default logger
+	slog.SetDefault(logger)
+
 	// Create registry with configuration
 	registry := &containerdRegistry{
 		client:              client,
@@ -805,7 +767,7 @@ func main() {
 	mux.Handle("/", ociHandler)
 
 	// Wrap with logging middleware
-	handler := loggingMiddleware(logFormat)(mux)
+	handler := loggingMiddleware(logger)(mux)
 
 	// Create HTTP server with timeouts
 	srv := &http.Server{
@@ -822,15 +784,16 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		log.Printf("listening on %s", listenAddr)
+		logger.Info("server starting", "address", listenAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			logger.Error("server error", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	// Wait for interrupt signal
 	<-ctx.Done()
-	log.Println("shutting down gracefully, press Ctrl+C again to force")
+	logger.Info("shutdown signal received, shutting down gracefully (press Ctrl+C again to force)")
 
 	// Create shutdown context with timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -838,8 +801,8 @@ func main() {
 
 	// Attempt graceful shutdown
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("server forced to shutdown: %v", err)
+		logger.Error("server forced to shutdown", "error", err)
 	}
 
-	log.Println("server stopped")
+	logger.Info("server stopped")
 }

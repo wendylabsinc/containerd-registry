@@ -1,6 +1,6 @@
 module github.com/tianon/containerd-registry
 
-go 1.23
+go 1.25
 
 require (
 	cuelabs.dev/go/oci/ociregistry v0.0.0-20250715075730-49cab49c8e9d
