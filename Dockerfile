@@ -25,8 +25,8 @@ FROM --platform=$TARGETPLATFORM alpine:3.21
 COPY --from=build --link /containerd-registry /usr/local/bin/
 
 # Server configuration
-# Listen address (default: ":5000")
-ENV LISTEN_ADDRESS=":5000"
+# Listen address (default: ":8080")
+ENV LISTEN_ADDRESS=":8080"
 
 # Logging configuration
 # Log format: "text" for human-readable, "json" for structured logging (default: "text")

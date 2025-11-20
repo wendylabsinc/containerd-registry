@@ -702,7 +702,7 @@ func main() {
 	}
 
 	// Server configuration
-	listenAddr := ":5000"
+	listenAddr := ":8080"
 	if val, ok := os.LookupEnv("LISTEN_ADDRESS"); ok {
 		listenAddr = val
 	}
