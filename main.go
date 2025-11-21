@@ -305,20 +305,34 @@ func (r containerdRegistry) GetBlobRange(ctx context.Context, repo string, diges
 		return nil, err
 	}
 
-	requestedSize := offset1 - offset0
-	if offset1 < 0 || offset0+requestedSize > br.desc.Size {
-		// "If offset1 is negative or exceeds the actual size of the blob, GetBlobRange will return all the data starting from offset0."
-		return br, nil
-	}
-
 	ra, err := br.ensureReaderAt()
 	if err != nil {
 		br.Close()
 		return nil, err
 	}
 
-	// hack hack hack
-	br.reader = io.NewSectionReader(ra, offset0, requestedSize)
+	// Calculate size for the range
+	var size int64
+	if offset1 < 0 || offset0 >= br.desc.Size {
+		// Read to EOF from offset0
+		if offset0 < 0 {
+			offset0 = 0
+		}
+		size = br.desc.Size - offset0
+	} else {
+		// Read from offset0 to offset1
+		size = offset1 - offset0
+		if size < 0 {
+			size = 0
+		}
+		// Clamp to blob size
+		if offset0+size > br.desc.Size {
+			size = br.desc.Size - offset0
+		}
+	}
+
+	// Always set reader to start at offset0
+	br.reader = io.NewSectionReader(ra, offset0, size)
 
 	return br, nil
 }
