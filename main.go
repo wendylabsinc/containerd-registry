@@ -825,11 +825,12 @@ func main() {
 
 	// Create HTTP server with timeouts
 	srv := &http.Server{
-		Addr:         listenAddr,
-		Handler:      handler,
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
-		IdleTimeout:  idleTimeout,
+		Addr:           listenAddr,
+		Handler:        handler,
+		ReadTimeout:    readTimeout,
+		WriteTimeout:   writeTimeout,
+		IdleTimeout:    idleTimeout,
+		MaxHeaderBytes: 1 << 20, // 1 MiB - prevent header-based DoS attacks
 	}
 
 	// Setup graceful shutdown with signal handling
