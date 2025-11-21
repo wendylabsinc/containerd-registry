@@ -48,4 +48,10 @@ ENV BLOB_LEASE_EXPIRATION="15m"
 # Maximum manifest size in bytes (default: "4194304" = 4 MiB)
 ENV MAX_MANIFEST_SIZE="4194304"
 
+# Safety configuration
+# Allow DELETE operations (default: disabled for safety)
+# Set to "1" to enable blob/manifest/tag deletion
+# WARNING: Deletes can corrupt registry state if content is still referenced
+# ENV ALLOW_DELETE="1"
+
 CMD ["containerd-registry"]

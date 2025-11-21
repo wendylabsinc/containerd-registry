@@ -432,17 +432,42 @@ func (r containerdRegistry) ResolveTag(ctx context.Context, repo string, tagName
 }
 
 func (r containerdRegistry) DeleteBlob(ctx context.Context, repo string, digest ociregistry.Digest) error {
-	// TODO should we stop this from removing things that are still tagged or children of tagged?
 	return r.client.ContentStore().Delete(ctx, digest)
 }
 
 func (r containerdRegistry) DeleteManifest(ctx context.Context, repo string, digest ociregistry.Digest) error {
-	// TODO should we stop this from removing things that are still tagged or children of tagged?
 	return r.client.ContentStore().Delete(ctx, digest)
 }
 
 func (r containerdRegistry) DeleteTag(ctx context.Context, repo string, name string) error {
 	return r.client.ImageService().Delete(ctx, repo+":"+name)
+}
+
+// safeDeleteRegistry wraps a registry and denies delete operations unless explicitly allowed
+type safeDeleteRegistry struct {
+	ociregistry.Interface
+	allowDelete bool
+}
+
+func (s safeDeleteRegistry) DeleteBlob(ctx context.Context, repo string, digest ociregistry.Digest) error {
+	if !s.allowDelete {
+		return ociregistry.ErrDenied
+	}
+	return s.Interface.DeleteBlob(ctx, repo, digest)
+}
+
+func (s safeDeleteRegistry) DeleteManifest(ctx context.Context, repo string, digest ociregistry.Digest) error {
+	if !s.allowDelete {
+		return ociregistry.ErrDenied
+	}
+	return s.Interface.DeleteManifest(ctx, repo, digest)
+}
+
+func (s safeDeleteRegistry) DeleteTag(ctx context.Context, repo string, name string) error {
+	if !s.allowDelete {
+		return ociregistry.ErrDenied
+	}
+	return s.Interface.DeleteTag(ctx, repo, name)
 }
 
 func (r containerdRegistry) PushBlob(ctx context.Context, repo string, desc ociregistry.Descriptor, reader io.Reader) (ociregistry.Descriptor, error) {
@@ -776,8 +801,19 @@ func main() {
 		manifestSizeLimit:   manifestSizeLimit,
 	}
 
+	// Wrap with delete safety (deny deletes by default)
+	allowDelete := false
+	if val, ok := os.LookupEnv("ALLOW_DELETE"); ok && val == "1" {
+		allowDelete = true
+		logger.Warn("DELETE operations enabled - use with caution", "ALLOW_DELETE", val)
+	}
+	var backend ociregistry.Interface = safeDeleteRegistry{
+		Interface:   registry,
+		allowDelete: allowDelete,
+	}
+
 	// Create OCI registry handler
-	ociHandler := ociserver.New(registry, nil)
+	ociHandler := ociserver.New(backend, nil)
 
 	// Create mux to handle both /readyz and registry endpoints
 	mux := http.NewServeMux()
