@@ -158,7 +158,9 @@ func (r containerdRegistry) Repositories(ctx context.Context, startAfter string)
 	sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
 
 	if startAfter != "" {
-		first := sort.Search(len(names), func(i int) bool { return names[i] > startAfter })
+		// Use case-insensitive comparison to match the sort order
+		startAfterLower := strings.ToLower(startAfter)
+		first := sort.Search(len(names), func(i int) bool { return strings.ToLower(names[i]) > startAfterLower })
 		names = names[first:]
 	}
 
@@ -195,7 +197,9 @@ func (r containerdRegistry) Tags(ctx context.Context, repo string, startAfter st
 	sort.Slice(tags, func(i, j int) bool { return strings.ToLower(tags[i]) < strings.ToLower(tags[j]) })
 
 	if startAfter != "" {
-		first := sort.Search(len(tags), func(i int) bool { return tags[i] > startAfter })
+		// Use case-insensitive comparison to match the sort order
+		startAfterLower := strings.ToLower(startAfter)
+		first := sort.Search(len(tags), func(i int) bool { return strings.ToLower(tags[i]) > startAfterLower })
 		tags = tags[first:]
 	}
 
