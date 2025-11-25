@@ -61,17 +61,21 @@ jobs:
           # Extract the first tag from metadata
           ARM64_TAG=$(echo "${{ steps.meta.outputs.tags }}" | grep -m1 "ghcr.io")
 
+          # Create docker config directory for crane
+          mkdir -p .docker
+          chmod 777 .docker
+
+          # Use crane to authenticate
+          docker run --rm \
+            -v $(pwd)/.docker:/root/.docker \
+            gcr.io/go-containerregistry/crane:latest \
+            auth login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+
           # Use crane to export ARM64 image as proper Docker tar
           # crane pull downloads the ARM64 image and saves it as a Docker tar
           docker run --rm \
             -v $(pwd):/workspace \
-            -e DOCKER_CONFIG=/workspace/.docker \
-            gcr.io/go-containerregistry/crane:latest \
-            auth login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
-
-          docker run --rm \
-            -v $(pwd):/workspace \
-            -e DOCKER_CONFIG=/workspace/.docker \
+            -v $(pwd)/.docker:/root/.docker \
             gcr.io/go-containerregistry/crane:latest \
             pull --platform linux/arm64 ${ARM64_TAG} /workspace/containerd-registry-arm64.tar
 
