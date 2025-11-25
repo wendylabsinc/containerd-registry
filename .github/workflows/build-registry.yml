@@ -58,14 +58,15 @@ jobs:
       # Export ARM64 image as tar for Yocto builds
       - name: Export ARM64 image for Yocto
         run: |
-          # Extract the ARM64 tag from metadata
+          # Extract the first tag from metadata
           ARM64_TAG=$(echo "${{ steps.meta.outputs.tags }}" | grep -m1 "ghcr.io")
 
-          # Pull the ARM64 image from registry (already pushed in previous step)
-          docker pull --platform linux/arm64 ${ARM64_TAG}
-
-          # Export using docker save to create proper tar format
-          docker save ${ARM64_TAG} -o containerd-registry-arm64.tar
+          # Use crane to export ARM64 image as proper Docker tar
+          # crane pull downloads the ARM64 image and saves it as a Docker tar
+          docker run --rm \
+            -v $(pwd):/workspace \
+            gcr.io/go-containerregistry/crane:latest \
+            pull --platform linux/arm64 ${ARM64_TAG} /workspace/containerd-registry-arm64.tar
 
           # Compress for faster downloads
           gzip containerd-registry-arm64.tar
