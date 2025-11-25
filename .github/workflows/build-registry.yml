@@ -65,9 +65,9 @@ jobs:
           mkdir -p .docker
           chmod 777 .docker
 
-          # Use crane to authenticate
+          # Use crane to authenticate (crane runs as 'nonroot' user)
           docker run --rm \
-            -v $(pwd)/.docker:/root/.docker \
+            -v $(pwd)/.docker:/home/nonroot/.docker \
             gcr.io/go-containerregistry/crane:latest \
             auth login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
 
@@ -75,7 +75,7 @@ jobs:
           # crane pull downloads the ARM64 image and saves it as a Docker tar
           docker run --rm \
             -v $(pwd):/workspace \
-            -v $(pwd)/.docker:/root/.docker \
+            -v $(pwd)/.docker:/home/nonroot/.docker \
             gcr.io/go-containerregistry/crane:latest \
             pull --platform linux/arm64 ${ARM64_TAG} /workspace/containerd-registry-arm64.tar
 
