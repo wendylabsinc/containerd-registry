@@ -55,29 +55,25 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Install crane for image export
+      - name: Install crane
+        run: |
+          curl -sL "https://github.com/google/go-containerregistry/releases/download/v0.19.1/go-containerregistry_Linux_x86_64.tar.gz" | tar -xz -C /tmp
+          sudo mv /tmp/crane /usr/local/bin/
+          crane version
+
       # Export ARM64 image as tar for Yocto builds
       - name: Export ARM64 image for Yocto
         run: |
           # Extract the first tag from metadata
           ARM64_TAG=$(echo "${{ steps.meta.outputs.tags }}" | grep -m1 "ghcr.io")
 
-          # Create docker config directory for crane
-          mkdir -p .docker
-          chmod 777 .docker
-
-          # Use crane to authenticate (crane runs as 'nonroot' user)
-          docker run --rm \
-            -v $(pwd)/.docker:/home/nonroot/.docker \
-            gcr.io/go-containerregistry/crane:latest \
-            auth login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+          # Authenticate crane to ghcr.io
+          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u ${{ github.actor }} --password-stdin
 
           # Use crane to export ARM64 image as proper Docker tar
           # crane pull downloads the ARM64 image and saves it as a Docker tar
-          docker run --rm \
-            -v $(pwd):/workspace \
-            -v $(pwd)/.docker:/home/nonroot/.docker \
-            gcr.io/go-containerregistry/crane:latest \
-            pull --platform linux/arm64 ${ARM64_TAG} /workspace/containerd-registry-arm64.tar
+          crane pull --platform linux/arm64 ${ARM64_TAG} containerd-registry-arm64.tar
 
           # Compress for faster downloads
           gzip containerd-registry-arm64.tar
