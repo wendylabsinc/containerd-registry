@@ -65,6 +65,13 @@ jobs:
           # crane pull downloads the ARM64 image and saves it as a Docker tar
           docker run --rm \
             -v $(pwd):/workspace \
+            -e DOCKER_CONFIG=/workspace/.docker \
+            gcr.io/go-containerregistry/crane:latest \
+            auth login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+
+          docker run --rm \
+            -v $(pwd):/workspace \
+            -e DOCKER_CONFIG=/workspace/.docker \
             gcr.io/go-containerregistry/crane:latest \
             pull --platform linux/arm64 ${ARM64_TAG} /workspace/containerd-registry-arm64.tar
 
