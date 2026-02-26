@@ -62,25 +62,25 @@ jobs:
           sudo mv /tmp/crane /usr/local/bin/
           crane version
 
-      # Export ARM64 image as tar for Yocto builds
-      - name: Export ARM64 image for Yocto
+      # Export platform images as tars for Yocto builds and .deb/.rpm packages
+      - name: Export platform images
         run: |
           # Extract the first tag from metadata
-          ARM64_TAG=$(echo "${{ steps.meta.outputs.tags }}" | grep -m1 "ghcr.io")
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | grep -m1 "ghcr.io")
 
           # Authenticate crane to ghcr.io
           echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u ${{ github.actor }} --password-stdin
 
-          # Use crane to export ARM64 image as proper Docker tar
-          # crane pull downloads the ARM64 image and saves it as a Docker tar
-          crane pull --platform linux/arm64 ${ARM64_TAG} containerd-registry-arm64.tar
-
-          # Compress for faster downloads
-          gzip containerd-registry-arm64.tar
+          # Export ARM64 and AMD64 images as Docker tars
+          for arch in arm64 amd64; do
+            crane pull --platform "linux/${arch}" "${IMAGE_TAG}" "containerd-registry-${arch}.tar"
+            gzip "containerd-registry-${arch}.tar"
+          done
 
       - name: Generate checksums
         run: |
           sha256sum containerd-registry-arm64.tar.gz > containerd-registry-arm64.tar.gz.sha256
+          sha256sum containerd-registry-amd64.tar.gz > containerd-registry-amd64.tar.gz.sha256
 
       # Upload to GitHub Release (permanent, for Yocto builds)
       - name: Create Release
@@ -90,13 +90,15 @@ jobs:
           files: |
             containerd-registry-arm64.tar.gz
             containerd-registry-arm64.tar.gz.sha256
+            containerd-registry-amd64.tar.gz
+            containerd-registry-amd64.tar.gz.sha256
           body: |
             ## Container Registry Release ${{ github.ref_name }}
 
-            ### For Yocto Builds
-            Download the ARM64 image tar for integration into your Yocto build:
-            - **Image**: `containerd-registry-arm64.tar.gz`
-            - **Checksum**: `containerd-registry-arm64.tar.gz.sha256`
+            ### For Yocto Builds / .deb Packages
+            Download the image tar for your platform:
+            - **ARM64**: `containerd-registry-arm64.tar.gz` ([checksum](containerd-registry-arm64.tar.gz.sha256))
+            - **AMD64**: `containerd-registry-amd64.tar.gz` ([checksum](containerd-registry-amd64.tar.gz.sha256))
 
             ```bitbake
             SRC_URI = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/containerd-registry-arm64.tar.gz"
@@ -122,8 +124,10 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: containerd-registry-arm64-${{ github.sha }}
+          name: containerd-registry-${{ github.sha }}
           path: |
             containerd-registry-arm64.tar.gz
             containerd-registry-arm64.tar.gz.sha256
+            containerd-registry-amd64.tar.gz
+            containerd-registry-amd64.tar.gz.sha256
           retention-days: 30
