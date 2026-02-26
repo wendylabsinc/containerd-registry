@@ -22,7 +22,7 @@ jobs:
       - run: |
           sudo ctr version
           test -S /run/containerd/containerd.sock
-          docker run -dit --name containerd-registry --mount type=bind,src=/run/containerd/containerd.sock,dst=/run/containerd/containerd.sock,ro --publish 8080:8080 -e ALLOW_DELETE=1 containerd-registry
+          docker run -dit --name containerd-registry --user root --mount type=bind,src=/run/containerd/containerd.sock,dst=/run/containerd/containerd.sock,ro --publish 8080:8080 -e ALLOW_DELETE=1 containerd-registry
 
       # test pulling
       - run: sudo ctr content fetch docker.io/tianon/true:oci
