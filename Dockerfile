@@ -22,6 +22,8 @@ RUN set -eux; \
 
 FROM --platform=$TARGETPLATFORM alpine:3.21
 
+RUN addgroup -S registry && adduser -S -G registry registry
+
 COPY --from=build --link /containerd-registry /usr/local/bin/
 
 # Server configuration
@@ -53,5 +55,15 @@ ENV MAX_MANIFEST_SIZE="4194304"
 # Set to "1" to enable blob/manifest/tag deletion
 # WARNING: Deletes can corrupt registry state if content is still referenced
 # ENV ALLOW_DELETE="1"
+
+# Authentication (optional)
+# Set AUTH_TOKEN to require Bearer token authentication on all endpoints
+# ENV AUTH_TOKEN="my-secret-token"
+
+# Blob size limit (optional, in bytes)
+# Set MAX_BLOB_SIZE to reject blob uploads exceeding this size
+# ENV MAX_BLOB_SIZE="10737418240"
+
+USER registry
 
 CMD ["containerd-registry"]
