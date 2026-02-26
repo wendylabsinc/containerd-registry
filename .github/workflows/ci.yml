@@ -15,14 +15,14 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # build & run
       - run: docker buildx build --pull --tag containerd-registry .
       - run: |
           sudo ctr version
           test -S /run/containerd/containerd.sock
-          docker run -dit --name containerd-registry --mount type=bind,src=/run/containerd/containerd.sock,dst=/run/containerd/containerd.sock,ro --publish 8080:8080 -e ALLOW_DELETE=1 containerd-registry
+          docker run -dit --name containerd-registry --user root --mount type=bind,src=/run/containerd/containerd.sock,dst=/run/containerd/containerd.sock,ro --publish 8080:8080 -e ALLOW_DELETE=1 containerd-registry
 
       # test pulling
       - run: sudo ctr content fetch docker.io/tianon/true:oci
@@ -73,7 +73,7 @@ jobs:
           commit="$(git rev-parse HEAD)"
           CGO_ENABLED=0 go test -c -trimpath -o oci-conformance -ldflags="-X github.com/opencontainers/distribution-spec/conformance.Version=$commit"
           ./oci-conformance
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: oci-conformance
           path: distribution-spec/conformance/report.html
