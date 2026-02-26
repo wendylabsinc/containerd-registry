@@ -22,24 +22,24 @@ jobs:
       - run: |
           sudo ctr version
           test -S /run/containerd/containerd.sock
-          docker run -dit --name containerd-registry --mount type=bind,src=/run/containerd/containerd.sock,dst=/run/containerd/containerd.sock,ro --publish 5000:5000 containerd-registry
+          docker run -dit --name containerd-registry --mount type=bind,src=/run/containerd/containerd.sock,dst=/run/containerd/containerd.sock,ro --publish 8080:8080 -e ALLOW_DELETE=1 containerd-registry
 
       # test pulling
       - run: sudo ctr content fetch docker.io/tianon/true:oci
-      - run: docker run --rm localhost:5000/docker.io/tianon/true:oci
+      - run: docker run --rm localhost:8080/docker.io/tianon/true:oci
 
       # test pushing
-      - run: docker run --rm --network=container:containerd-registry gcr.io/go-containerregistry/crane --verbose copy tianon/true:yoloci localhost:5000/totally-fake-never-exists:true-yoloci
+      - run: docker run --rm --network=container:containerd-registry gcr.io/go-containerregistry/crane --verbose copy tianon/true:yoloci localhost:8080/totally-fake-never-exists:true-yoloci
       - run: sudo ctr run --rm totally-fake-never-exists:true-yoloci true-yoloci
 
       # test listing
-      - run: docker run --rm --network=container:containerd-registry gcr.io/go-containerregistry/crane catalog localhost:5000 | grep -E '^totally-fake-never-exists$'
-      - run: docker run --rm --network=container:containerd-registry gcr.io/go-containerregistry/crane ls localhost:5000/totally-fake-never-exists | grep -E '^true-yoloci$'
+      - run: docker run --rm --network=container:containerd-registry gcr.io/go-containerregistry/crane catalog localhost:8080 | grep -E '^totally-fake-never-exists$'
+      - run: docker run --rm --network=container:containerd-registry gcr.io/go-containerregistry/crane ls localhost:8080/totally-fake-never-exists | grep -E '^true-yoloci$'
 
       - name: OCI conformance tests
         env:
           # https://github.com/opencontainers/distribution-spec/tree/HEAD/conformance#readme
-          OCI_ROOT_URL: http://localhost:5000
+          OCI_ROOT_URL: http://localhost:8080
           OCI_NAMESPACE: oci-conformance/repo
           OCI_CROSSMOUNT_NAMESPACE: conformance/mount
           OCI_HIDE_SKIPPED_WORKFLOWS: 0
