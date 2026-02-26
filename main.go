@@ -3,11 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -36,7 +37,7 @@ import (
 type responseWriter struct {
 	http.ResponseWriter
 	status      int
-	bytes       int64
+	bytes       atomic.Int64
 	wroteHeader bool
 }
 
@@ -53,8 +54,43 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 		rw.WriteHeader(http.StatusOK)
 	}
 	n, err := rw.ResponseWriter.Write(b)
-	rw.bytes += int64(n)
+	rw.bytes.Add(int64(n))
 	return n, err
+}
+
+// securityHeadersMiddleware adds defensive HTTP response headers
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// authMiddleware enforces bearer token authentication when AUTH_TOKEN is set.
+// If AUTH_TOKEN is not set, all requests are allowed (no-op).
+// The /readyz health endpoint is always exempt from authentication.
+func authMiddleware(token string, logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if token == "" {
+			return next
+		}
+		tokenBytes := []byte(token)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/readyz" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, "Bearer ") || subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, "Bearer ")), tokenBytes) != 1 {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="containerd-registry"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // loggingMiddleware logs all HTTP requests using slog
@@ -92,22 +128,23 @@ func loggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				"remote", r.RemoteAddr,
 				"status", wrapped.status,
 				"duration_ms", duration.Milliseconds(),
-				"bytes", wrapped.bytes,
+				"bytes", wrapped.bytes.Load(),
 			)
 		})
 	}
 }
 
 // readyzHandler checks if containerd is connected and ready
-func readyzHandler(client *containerd.Client) http.HandlerFunc {
+func readyzHandler(client *containerd.Client, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
 		// Try to get containerd version as a health check
 		if _, err := client.Version(ctx); err != nil {
+			logger.Error("readyz: containerd not ready", "error", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, "containerd not ready: %v\n", err)
+			fmt.Fprintln(w, "containerd not ready")
 			return
 		}
 
@@ -123,6 +160,7 @@ type containerdRegistry struct {
 	// Configurable limits and timeouts
 	blobLeaseExpiration time.Duration
 	manifestSizeLimit   int64
+	maxBlobSize         int64 // 0 means unlimited
 }
 
 func (r containerdRegistry) Repositories(ctx context.Context, startAfter string) ociregistry.Seq[string] {
@@ -183,9 +221,12 @@ func (r containerdRegistry) Tags(ctx context.Context, repo string, startAfter st
 			// just ignore images whose names we can't parse (TODO debug log?)
 			continue
 		}
-		// TODO do we trust the filter we provided to List(), or do we verify that ref is a ref.Named _and_ that Name() == repo?
 		if _, ok := ref.(docker.Digested); ok {
 			// ignore "digested" references (foo:bar@baz)
+			continue
+		}
+		// verify the filter returned images for the requested repo only
+		if named, ok := ref.(docker.Named); !ok || named.Name() != repo {
 			continue
 		}
 		if tagged, ok := ref.(docker.Tagged); ok {
@@ -317,6 +358,10 @@ func (r containerdRegistry) GetBlobRange(ctx context.Context, repo string, diges
 
 	// Calculate size for the range
 	var size int64
+	if offset1 >= 0 && offset1 < offset0 {
+		br.Close()
+		return nil, ociregistry.NewHTTPError(errors.New("invalid range: end before start"), http.StatusRequestedRangeNotSatisfiable, nil, nil)
+	}
 	if offset1 < 0 || offset0 >= br.desc.Size {
 		// Read to EOF from offset0
 		if offset0 < 0 {
@@ -326,9 +371,6 @@ func (r containerdRegistry) GetBlobRange(ctx context.Context, repo string, diges
 	} else {
 		// Read from offset0 to offset1
 		size = offset1 - offset0
-		if size < 0 {
-			size = 0
-		}
 		// Clamp to blob size
 		if offset0+size > br.desc.Size {
 			size = br.desc.Size - offset0
@@ -366,7 +408,11 @@ func (r containerdRegistry) GetManifest(ctx context.Context, repo string, digest
 		return nil, err
 	}
 	if mediaTypeWrapper.MediaType == "" {
-		return nil, errors.New("failed to parse mediaType from " + string(desc.Digest) + " (for Content-Type header)")
+		return nil, errors.New("failed to parse mediaType from manifest (for Content-Type header)")
+	}
+	// Reject mediaType values containing CR/LF to prevent HTTP header injection
+	if strings.ContainsAny(mediaTypeWrapper.MediaType, "\r\n") {
+		return nil, errors.New("invalid mediaType: contains control characters")
 	}
 	desc.MediaType = mediaTypeWrapper.MediaType
 
@@ -471,6 +517,13 @@ func (s safeDeleteRegistry) DeleteTag(ctx context.Context, repo string, name str
 }
 
 func (r containerdRegistry) PushBlob(ctx context.Context, repo string, desc ociregistry.Descriptor, reader io.Reader) (ociregistry.Descriptor, error) {
+	if r.maxBlobSize > 0 && desc.Size > r.maxBlobSize {
+		return ociregistry.Descriptor{}, ociregistry.NewHTTPError(
+			fmt.Errorf("blob size %d exceeds maximum allowed size %d", desc.Size, r.maxBlobSize),
+			http.StatusRequestEntityTooLarge, nil, nil,
+		)
+	}
+
 	cs := r.client.ContentStore()
 
 	// since we don't know how soon this blob might be part of a tagged manifest (if ever), add an expiring lease so we have time to get to it being tagged before gc takes it
@@ -532,7 +585,7 @@ func (bw *containerdBlobWriter) Size() int64 {
 	if err != nil {
 		// Log error instead of panicking to avoid crashing the entire server
 		// This should rarely happen as cacheStatus() is called before Size() in normal flow
-		log.Printf("error getting blob writer status: %v, returning 0", err)
+		slog.Error("error getting blob writer status, returning 0", "error", err)
 		return 0
 	}
 	return status.Offset
@@ -666,6 +719,9 @@ func (r containerdRegistry) PushManifest(ctx context.Context, repo string, tag s
 	labels := map[string]string{}
 	for field, desc := range labelMappings {
 		if desc != nil {
+			if _, err := digest.Parse(string(desc.Digest)); err != nil {
+				return ociregistry.Descriptor{}, fmt.Errorf("invalid child digest in manifest field %q: %w", field, err)
+			}
 			labels["containerd.io/gc.ref.content."+field] = string(desc.Digest)
 		}
 	}
@@ -718,7 +774,7 @@ func parseDuration(key string, defaultValue time.Duration) time.Duration {
 		if d, err := time.ParseDuration(val); err == nil {
 			return d
 		}
-		log.Printf("invalid %s value %q, using default %v", key, val, defaultValue)
+		slog.Warn("invalid environment variable, using default", "key", key, "value", val, "default", defaultValue)
 	}
 	return defaultValue
 }
@@ -726,9 +782,13 @@ func parseDuration(key string, defaultValue time.Duration) time.Duration {
 func parseInt64(key string, defaultValue int64) int64 {
 	if val, ok := os.LookupEnv(key); ok {
 		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
+			if i <= 0 {
+				slog.Warn("non-positive value, using default", "key", key, "value", i, "default", defaultValue)
+				return defaultValue
+			}
 			return i
 		}
-		log.Printf("invalid %s value %q, using default %d", key, val, defaultValue)
+		slog.Warn("invalid environment variable, using default", "key", key, "value", val, "default", defaultValue)
 	}
 	return defaultValue
 }
@@ -766,6 +826,21 @@ func main() {
 	// Default: 4 MiB manifest size limit
 	// https://github.com/opencontainers/distribution-spec/pull/293
 	manifestSizeLimit := parseInt64("MAX_MANIFEST_SIZE", 4*1024*1024)
+	// Default: 10 GiB max blob size (0 means no limit for backwards compat)
+	maxBlobSize := int64(0)
+	if val, ok := os.LookupEnv("MAX_BLOB_SIZE"); ok {
+		if i, err := strconv.ParseInt(val, 10, 64); err == nil && i > 0 {
+			maxBlobSize = i
+		} else {
+			slog.Warn("invalid MAX_BLOB_SIZE, blob size limiting disabled", "value", val)
+		}
+	}
+
+	// Authentication configuration
+	authToken := ""
+	if val, ok := os.LookupEnv("AUTH_TOKEN"); ok && val != "" {
+		authToken = val
+	}
 
 	// Initialize containerd client
 	client, err := containerd.New(
@@ -773,7 +848,8 @@ func main() {
 		containerd.WithDefaultNamespace(containerdNamespace),
 	)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("failed to connect to containerd", "error", err)
+		os.Exit(1)
 	}
 	defer client.Close()
 
@@ -799,13 +875,21 @@ func main() {
 		client:              client,
 		blobLeaseExpiration: blobLeaseExpiration,
 		manifestSizeLimit:   manifestSizeLimit,
+		maxBlobSize:         maxBlobSize,
 	}
 
 	// Wrap with delete safety (deny deletes by default)
 	allowDelete := false
-	if val, ok := os.LookupEnv("ALLOW_DELETE"); ok && val == "1" {
-		allowDelete = true
-		logger.Warn("DELETE operations enabled - use with caution", "ALLOW_DELETE", val)
+	if val, ok := os.LookupEnv("ALLOW_DELETE"); ok {
+		switch strings.ToLower(val) {
+		case "1", "true", "yes":
+			allowDelete = true
+			logger.Warn("DELETE operations enabled - use with caution", "ALLOW_DELETE", val)
+		case "0", "false", "no", "":
+			// disabled
+		default:
+			logger.Warn("unrecognized ALLOW_DELETE value, treating as disabled", "value", val)
+		}
 	}
 	var backend ociregistry.Interface = safeDeleteRegistry{
 		Interface:   registry,
@@ -817,11 +901,20 @@ func main() {
 
 	// Create mux to handle both /readyz and registry endpoints
 	mux := http.NewServeMux()
-	mux.HandleFunc("/readyz", readyzHandler(client))
+	mux.HandleFunc("/readyz", readyzHandler(client, logger))
 	mux.Handle("/", ociHandler)
 
-	// Wrap with logging middleware
-	handler := loggingMiddleware(logger)(mux)
+	// Wrap with middleware chain: logging → security headers → auth → mux
+	handler := loggingMiddleware(logger)(securityHeadersMiddleware(authMiddleware(authToken, logger)(mux)))
+
+	if authToken != "" {
+		logger.Info("bearer token authentication enabled")
+	} else {
+		logger.Warn("no AUTH_TOKEN set, running without authentication")
+	}
+	if maxBlobSize > 0 {
+		logger.Info("blob size limit enabled", "max_blob_size", maxBlobSize)
+	}
 
 	// Create HTTP server with timeouts
 	srv := &http.Server{
