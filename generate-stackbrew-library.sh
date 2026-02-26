@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-dir="$(dirname "$BASH_SOURCE")"
-cd "$dir"
+dir="$(dirname "${BASH_SOURCE[0]}")"
+cd "$dir" || exit 1
 
 commit="$(git log -1 --format='format:%H' HEAD --)"
 
